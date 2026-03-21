@@ -41,7 +41,7 @@ content     = {"data": "<envelope JSON 字符串>"}
   "contentType": 110,
   "sessionType": 3,
   "content": {
-    "data": "{\"version\":1,\"type\":1,\"data\":{\"title\":\"文章标题\",\"cover_url\":\"https://oss.example.com/covers/xxx.jpg\",\"summary\":\"摘要\",\"content_url\":\"https://oss.example.com/articles/xxx.html\"}}"
+    "data": "{\"version\":1,\"type\":1,\"data\":{\"title\":\"文章标题\",\"cover_path\":\"covers/xxx.jpg\",\"summary\":\"摘要\",\"content_path\":\"articles/xxx.html\"}}"
   }
 }
 ```
@@ -85,21 +85,28 @@ content     = {"data": "<envelope JSON 字符串>"}
 
 ```json
 {
-  "title":       "文章标题",
-  "cover_url":   "https://oss.example.com/covers/xxx.jpg",
-  "summary":     "摘要，不超过 200 字",
-  "content_url": "https://oss.example.com/articles/xxx.html"
+  "title":        "文章标题",
+  "cover_path":   "covers/xxx.jpg",
+  "summary":      "摘要，不超过 200 字",
+  "content_path": "articles/xxx.html"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `title` | string | 是 | 文章标题 |
-| `cover_url` | string | 否 | 封面图 URL；为空字符串时接收方展示占位图 |
+| `cover_path` | string | 否 | 封面图相对路径；为空字符串时接收方展示占位图 |
 | `summary` | string | 否 | 摘要，建议不超过 200 字 |
-| `content_url` | string | 是 | 正文 HTML 文件 URL |
+| `content_path` | string | 是 | 正文 HTML 相对路径 |
 
-> `cover_url` 标记为可选：发布方在封面上传完成前可先发送空值，接收方显示默认占位图。
+> **资源路径设计**：`cover_path` / `content_path` 存储相对于节点 OSS base URL 的路径（不含 host），完整 URL 由客户端在运行时拼接：
+> ```
+> full_url = {node_oss_base_url} + "/" + {path}
+> ```
+> 例：`node_oss_base_url = https://oss.example.com/openim`，`cover_path = covers/xxx.jpg`
+> → `https://oss.example.com/openim/covers/xxx.jpg`
+>
+> 节点迁移存储时只需更新 `node_oss_base_url` 配置，历史消息自动生效，无需重写消息内容。
 
 ## 六、Go 库 API（msgext 子包）
 
