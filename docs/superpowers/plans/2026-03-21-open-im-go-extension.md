@@ -49,10 +49,10 @@ internal/handler/publish_integration_test.go # 验证响应并检查 msgext enve
 
 - [ ] **Step 1: 初始化 Go module**
 
+仓库已 clone 至 `/Users/zero/Documents/GitHub/open-im-development/open-im-go-extension`（空仓库）。
+
 ```bash
-mkdir -p /Users/zero/Documents/GitHub/open-im-development/open-im-go-extension
 cd /Users/zero/Documents/GitHub/open-im-development/open-im-go-extension
-git init
 go mod init github.com/langgexyz/open-im-go-extension
 ```
 
