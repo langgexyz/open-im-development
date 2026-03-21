@@ -4,7 +4,7 @@
 
 open-im 平台的 Admin send_msg API 仅支持有限的内置消息类型（Text、Picture、Custom 等）。公众号平台需要语义明确的业务消息类型（文章、投票、活动等），直接在 OpenIM 层扩展会产生 fork 维护成本。
 
-**解决方案**：以 OpenIM 各 contentType 作为通道，在其 `data` 字段内定义一套跨语言的 envelope 协议。不同 contentType 对应独立子包，`custom/` 子包使用 `contentType=110`（Custom 通道）承载业务消息。所有语言库（Go/Swift/Kotlin/JS）实现相同的协议规范，类型系统由 `open-im-*-extension` 系列库统一维护，与 OpenIM 版本无关。
+**解决方案**：以 OpenIM 各 contentType 作为通道，在其 `data` 字段内定义一套跨语言的 envelope 协议。不同 contentType 对应独立子包，`msgext/` 子包（Message Extension）使用 `contentType=110` 承载扩展业务消息。所有语言库（Go/Swift/Kotlin/JS）实现相同的协议规范，类型系统由 `open-im-*-extension` 系列库统一维护，与 OpenIM 版本无关。
 
 ## 二、库结构与通道划分
 
@@ -12,16 +12,16 @@ open-im 平台的 Admin send_msg API 仅支持有限的内置消息类型（Text
 
 ```
 open-im-go-extension/
-  custom/           # contentType=110（OpenIM Custom 通道），当前使用
+  msgext/           # Message Extension，contentType=110，当前使用
     envelope.go     # Envelope 结构、MsgType 常量、Marshal/Unmarshal
     article.go      # ArticlePayload struct + 构造函数
   # 未来扩展示例（v1 不实现）：
   # notification/   # contentType=1400（OANotification 通道）
 ```
 
-v1 只有 `custom/` 子包。
+v1 只有 `msgext/` 子包。
 
-## 三、Custom 通道协议（contentType=110）
+## 三、msgext 通道协议（contentType=110）
 
 ### 3.1 OpenIM 传输层
 
@@ -71,7 +71,7 @@ content     = {"data": "<envelope JSON 字符串>"}
 - **payload 破坏性变更**（如重命名必填字段）：不修改已有 type 值，而是新增一个 type（如 Article v2 = type 5），保持旧 type 继续工作。
 - **`version` 递增**：仅当 envelope 结构自身有破坏性变更时发生；当前 v1 不预期发生。
 
-## 四、消息类型枚举（custom 通道）
+## 四、消息类型枚举（msgext 通道）
 
 | 值 | 名称 | 说明 |
 |----|------|------|
@@ -101,26 +101,26 @@ content     = {"data": "<envelope JSON 字符串>"}
 
 > `cover_url` 标记为可选：发布方在封面上传完成前可先发送空值，接收方显示默认占位图。
 
-## 六、Go 库 API（custom 子包）
+## 六、Go 库 API（msgext 子包）
 
 **Module**：`github.com/langgexyz/open-im-go-extension`
-**Import**：`github.com/langgexyz/open-im-go-extension/custom`
+**Import**：`github.com/langgexyz/open-im-go-extension/msgext`
 
 ### 6.1 编码（服务端）
 
 ```go
 // 构造 Article envelope 并序列化为字符串，作为 OpenIM content.data 传入
-data, err := custom.NewArticle(title, coverURL, summary, contentURL).Marshal()
+data, err := msgext.NewArticle(title, coverURL, summary, contentURL).Marshal()
 ```
 
 ### 6.2 解码（客户端 SDK）
 
 ```go
-env, err := custom.Unmarshal(dataBytes)
+env, err := msgext.Unmarshal(dataBytes)
 if err != nil { /* handle */ }
 
 switch env.Type {
-case custom.TypeArticle:
+case msgext.TypeArticle:
     article := env.Article() // 返回 *ArticlePayload，类型匹配时保证非 nil
 default:
     // ErrUnknownType，忽略或上报
@@ -128,8 +128,8 @@ default:
 ```
 
 **`env.Article()` 契约**：
-- 当 `env.Type == TypeArticle` 时返回 `*ArticlePayload`，保证非 nil。
-- 当 `env.Type != TypeArticle` 时返回 `nil`，不 panic。
+- 当 `env.Type == msgext.TypeArticle` 时返回 `*ArticlePayload`，保证非 nil。
+- 当 `env.Type != msgext.TypeArticle` 时返回 `nil`，不 panic。
 - 调用方应先通过 switch/if 确认类型后再调用，lint 工具可对未检查类型的调用发出警告。
 
 ### 6.3 错误类型
