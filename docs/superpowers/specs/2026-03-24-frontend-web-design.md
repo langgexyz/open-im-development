@@ -316,9 +316,9 @@ Authorization: Bearer <hub_token>（管理员）
 { "app_id": "...", "name": "...", "avatar": "...", "description": "..." }
 ```
 
-### 6.5 节点列表（扩展字段）
+### 6.5 节点 API（扩展字段）
 
-`GET /nodes` 响应每个节点包含：
+`GET /nodes` 返回节点列表；`GET /nodes/:app_id` 返回单个节点，结构相同。每个节点包含：
 
 ```json
 {
@@ -327,9 +327,12 @@ Authorization: Bearer <hub_token>（管理员）
   "avatar": "...",
   "description": "...",
   "node_server_addr": "https://node.example.com:8080",
-  "node_web_addr": "https://node.example.com"
+  "node_web_addr": "https://node.example.com",
+  "admin_uid": "uid-abc123"
 }
 ```
+
+`admin_uid` 为激活该节点时的 Hub UID，Hub Web 用于判断当前登录用户是否为节点管理员（仅展示管理入口、允许访问 `/admin/nodes/:app_id`）。
 
 ---
 
