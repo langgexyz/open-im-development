@@ -5,7 +5,7 @@ export default function ArticleCard({ msg }: { msg: OIMMessage }) {
   const { title, cover_url } = msg.content
   const date = new Date(msg.send_time).toLocaleDateString('zh-CN')
   return (
-    <Link to={`/articles/${msg.msg_id}`} style={{ textDecoration:'none', color:'inherit' }}>
+    <Link to={`/articles/${msg.msg_id}?url=${encodeURIComponent(msg.content.content_url)}&title=${encodeURIComponent(msg.content.title)}`} style={{ textDecoration:'none', color:'inherit' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
         padding:'12px 0', borderBottom:'1px solid #f0f0f0' }}>
         <div style={{ flex:1, marginRight:12 }}>
