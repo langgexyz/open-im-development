@@ -388,8 +388,9 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 |------|--------|------|
 | `GET  /node/info` | App / Hub Web | 节点元数据、app_public_key |
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
-| `POST /auth/token` | Node Web | credential → `{ app_token, app_uid }` |
-| `POST /auth/exchange` | Node Web / App | `{ app_token }` → `{ openim_token, openim_api_addr, group_id }`（openim_api_addr 和 group_id 来自 config.json）|
+| `POST /node/init` | Node Web（管理员）| 设置公众号资料 + 创建 OpenIM 订阅群 + gRPC 通知 Hub Server 更新目录；需 app_uid == config.admin_app_uid |
+| `POST /auth/token` | Node Web | `{ credential }` → `{ app_token, app_uid }` |
+| `POST /auth/exchange` | Node Web / App | `{ app_token }` → `{ openim_token, openim_api_addr, group_id }`（来自 config.json）|
 | `POST /internal/after-group-msg` | OpenIM（内网）| webhook 触发推送 |
 
 ### 10.2 Hub Server gRPC 接口（Node 调用，`:50051`）
@@ -401,16 +402,22 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 | `Heartbeat` | x-app-sig | 节点保活 |
 | `PushNotify` | x-app-sig | 离线推送转发 |
 
-### 10.3 Hub Server HTTP 接口（`:8080`）
+### 10.3 Hub Server gRPC 接口新增（Node 调用，`:50051`）
+
+| gRPC 方法 | 用途 |
+|-----------|------|
+| `UpdateNodeProfile` | Node Server 在 `/node/init` 完成后调用，更新 Hub nodes 表的 name/avatar/description |
+
+### 10.4 Hub Server HTTP 接口（`:8080`）
 
 | 接口 | 调用方 | 用途 |
 |------|--------|------|
-| `POST /user/register` | Hub Web | 邮箱注册，返回 `{ UID, hub_token }` |
-| `POST /user/login` | Hub Web | 邮箱登录，返回 `{ UID, hub_token }` |
-| `POST /user/credential` | Hub Web | 签发 credential（UID+AppId+exp） |
-| `POST /node/activate` | Hub Web（管理员）| 触发节点激活流程 |
-| `POST /node/profile` | Hub Web（管理员）| 设置节点公众号资料 |
-| `GET  /nodes` | Hub Web / App | 节点目录 |
+| `POST /user/register` | Hub Web | 邮箱注册（无验证），返回 `{ uid, hub_token }` |
+| `POST /user/login` | Hub Web | 邮箱登录，返回 `{ uid, hub_token }` |
+| `POST /user/credential` | Hub Web | 签发 credential（uid+app_id+exp） |
+| `POST /node/activate` | Hub Web（管理员）| 触发节点激活流程（code=AppId，幂等 UPSERT）|
+| `GET  /nodes` | Hub Web / App | 节点目录列表 |
+| `GET  /nodes/:app_id` | Hub Web | 单节点详情 |
 | `POST /user/device-token` | App | 注册 APNs/FCM 设备 token |
 
 ---

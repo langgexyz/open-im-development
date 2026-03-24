@@ -56,30 +56,40 @@
 ### 流程一：用户注册
 
 ```
-用户 → Hub Web：邮箱 + 密码注册
+用户 → Hub Web：邮箱 + 密码注册（密码最小 6 位，无邮箱验证）
 Hub Web → Hub Server：POST /user/register { email, password }
-Hub Server → Hub Web：{ UID, hub_token }
+Hub Server → Hub Web：{ uid, hub_token }   （uid = users.id 字符串化，如 "10001"）
 Hub Web：存入 sessionStorage，跳转 /nodes
 ```
 
-### 流程二：节点部署 & 激活（双向地址打通）
+> **TODO**：hub_token 过期后暂无 refresh token，到期重新登录；后续用户中心迭代时补充。
+
+### 流程二：节点部署 & 激活（幂等）
 
 ```
 1. 管理员启动 Node Server
-   → Node 生成随机 code（64 字符 hex，即 32 字节随机值，存内存，一次性，从启动日志获取）
+   → Node 生成 code（32 字节随机，64 hex 字符）—— code 即 AppId，全局唯一
+   → 存入内存，打印到启动日志，等待激活
    → 仅暴露 POST /node/activate?code= 端点
 
-2. 管理员在 Hub Web 填写：node_server_addr、node_web_addr（仅 origin，如 https://node.example.com）、code
-   → Hub Server 探活：GET node_server_addr/health → 200 OK
-   → Hub 生成：AppId、app_private_key、app_public_key
-   → Hub 写入 nodes 表：{ AppId, app_public_key, node_server_addr, node_web_addr, admin_uid }
+2. 管理员在 Hub Web 填写：code、node_server_addr、node_web_addr（origin）
+   → Hub Server：
+     a. 验证 hub_token，提取 admin_uid
+     b. 探活：GET node_server_addr/node/info → 200 且 activated: false
+     c. 检查 nodes 表 app_id = code：
+        - 无记录 → 生成 app_private_key、app_public_key；INSERT nodes 表（status=0）
+        - 有记录 → 复用已有密钥（幂等重试）
+     d. POST node_server_addr/node/activate?code=xxxx
+        Body：AES-256-GCM(key=SHA-256(hex_decode(code))) 加密 {
+          app_id, app_private_key, app_public_key,
+          hub_grpc_addr, hub_public_key, hub_web_origin
+        }
+     e. Node 返回 200 → Hub Server 更新 nodes 表 status=1（active）
 
-3. Hub → Node：POST node_server_addr/node/activate?code=xxxx
-   Body：AES-256-GCM(key=SHA-256(hex_decode(code))) 加密 { AppId, app_private_key, app_public_key,
-                          hub_server_addr, hub_public_key, hub_web_origin }
-   → Node 解密写入 config.json，code 立即失效
+3. Node Server 解密，写入 config.json，code 在内存中失效
 
-✅ 双向打通：Hub 存有 node_server_addr + node_web_addr，Node 存有 hub_server_addr + hub_web_origin
+✅ Hub 存有 node_server_addr + node_web_addr（admin_uid 记录激活者）
+✅ Node 存有 app_id、app_private_key、hub_grpc_addr、hub_public_key、hub_web_origin
 ```
 
 ### 流程三：管理员账号在节点上初始化
@@ -87,17 +97,21 @@ Hub Web：存入 sessionStorage，跳转 /nodes
 ```
 管理员（Hub UID 用户）接入自己的节点，与普通用户订阅流程完全相同：
 
-1. Hub Web → Hub Server：POST /user/credential { uid: admin_uid, target_app_id }
+1. Hub Web → Hub Server：POST /user/credential { target_app_id }
+   Authorization: Bearer <hub_token>
    → Hub 用 hub_private_key 签发 credential（绑定 uid + app_id + exp）
    → 返回 { credential }
 
-2. Hub Web → Node Server：POST /auth/token { credential }
-   → Node 用 hub_public_key 验签，校验 app_id 匹配本节点
-   → GetOrCreate accounts(admin_uid) → admin_app_uid
+2. Hub Web 跳转至 Node Web：node_web_addr/?credential=<credential>
+
+3. Node Web → Node Server：POST /auth/token { credential }
+   → 验签，GetOrCreate accounts(uid) → admin_app_uid
    → OpenIM 注册 admin_app_uid
-   → 用 app_private_key 签发 app_token
-   → 返回 { app_token, app_uid: <admin_app_uid> }（wire key 为 app_uid）
-   → Node Server 将此 app_uid 作为 admin_app_uid 写入 config.json
+   → 将此 app_uid 写入 config.json（admin_app_uid）
+   → 返回 { app_token, app_uid }
+
+4. Node Web → Node Server：POST /auth/exchange { app_token }
+   → 返回 { openim_token, openim_api_addr, group_id }
 
 ✅ config.admin_app_uid 就绪，流程四依赖此值，须在流程四之前完成
 ```
@@ -107,25 +121,30 @@ Hub Web：存入 sessionStorage，跳转 /nodes
 Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以下两层实现：
 
 - **OpenIM 层**：订阅群（`config.subscription_group_id`）的 owner 为 `admin_app_uid`，OpenIM 原生保障只有群主可发消息
-- **Node Server 层**：管理员专属接口（如 `/node/init`）直接比较 `app_uid == config.admin_app_uid`
+- **Node Server 层**：管理员专属接口（`/node/init`）直接比较 `app_uid == config.admin_app_uid`
 
 所有 accounts 表中的 app_uid 均为平等的"订阅者"，区分管理员与普通用户的唯一依据是 `config.json` 中的 `admin_app_uid`。
 
 ### 流程四：公众号业务初始化
 
 ```
-1. 管理员在 Hub Web 设置公众号资料：名称、头像、简介
-   → Hub Server：POST /node/profile { AppId, name, avatar, description }
-   → Hub → Node：POST node_server_addr/node/init { name, avatar, description }
-   → Node 存入 config.json（供 Node Web 展示）
-   → Hub 写入 nodes 表：name、avatar、description
+管理员在 Node Web（已通过流程三登录，app_uid == config.admin_app_uid）：
 
-2. Node Server → OpenIM Admin API：创建订阅群
-   owner = config.admin_app_uid（须先完成流程三）
-   → OpenIM 返回实际 group_id → 写入 config.json（`subscription_group_id`）
+1. 填写名称、头像、简介
+   Node Web → Node Server：POST /node/init { name, avatar, description }
+   Authorization: Bearer <app_token>（Node Server 校验 app_uid == config.admin_app_uid）
+
+   Node Server 内部执行（原子）：
+   a. 存入 config.json（name、avatar、description）
+   b. → OpenIM Admin API 创建订阅群（owner = admin_app_uid）
+      → 写入 config.json（subscription_group_id）
+   c. → Hub Server gRPC：UpdateNodeProfile { app_id, name, avatar, description }
+      → Hub Server 更新 nodes 表（供节点广场展示）
 
 ✅ 公众号上线，节点广场可被用户发现
 ```
+
+> Hub Web 的 `/admin/nodes/:app_id` 页面不再包含资料编辑表单，仅作为跳转入口（携带 credential 跳转至 Node Web 管理页面）。Hub Server 的 `POST /node/profile` 接口已移除。
 
 ### 流程五：普通用户订阅节点
 
@@ -307,27 +326,20 @@ Authorization: Bearer <hub_token>
 
 credential 绑定了 UID + AppId，防止跨节点重放。
 
-### 6.3 节点注册 & 激活
+### 6.3 节点注册 & 激活（幂等）
 
 ```
 POST /node/activate
 Authorization: Bearer <hub_token>（管理员）
 { "node_server_addr": "http://...", "node_web_addr": "http://...", "code": "..." }
-
-Hub Server 将激活请求中的 hub_token UID 记录为该节点的 admin_uid（存入 nodes 表），后续 `/node/profile` 等管理接口校验 `hub_token.UID == nodes.admin_uid`。
-
-激活包使用 AES-256-GCM，key = SHA-256(hex_decode(code))（code 为 64 字符 hex 字符串，即 32 字节随机值，管理员从 Node Server 启动日志获取；node_web_addr 须为纯 origin，不含路径）。
 ```
 
-### 6.4 设置公众号资料
+- `code` 即 `AppId`（32 字节随机，64 hex），由 Node Server 启动时生成
+- Hub Server 以 `app_id = code` 做 UPSERT，支持幂等重试
+- `admin_uid` 从 hub_token 提取并写入 nodes 表
+- 激活包：AES-256-GCM，key = SHA-256(hex_decode(code))
 
-```
-POST /node/profile
-Authorization: Bearer <hub_token>（管理员）
-{ "app_id": "...", "name": "...", "avatar": "...", "description": "..." }
-```
-
-### 6.5 节点 API（扩展字段）
+### 6.4 节点 API（扩展字段）
 
 `GET /nodes` 返回节点列表；`GET /nodes/:app_id` 返回单个节点，结构相同。每个节点包含：
 
@@ -352,7 +364,7 @@ Authorization: Bearer <hub_token>（管理员）
 | 接口 | 调用方 | 说明 |
 |------|--------|------|
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
-| `POST /node/init` | Hub Server | 接收公众号资料，创建 OpenIM 订阅群；Hub Server 用 `hub_private_key` 对请求签名（header: `X-Hub-Sig`），Node 用 `hub_public_key` 验签 |
+| `POST /node/init` | Node Web（管理员）| 设置公众号资料、创建 OpenIM 订阅群、通知 Hub Server 更新目录；需 app_uid == config.admin_app_uid |
 | `POST /auth/token` | Node Web | `{ credential }` → `{ app_token, app_uid }` |
 | `POST /auth/exchange` | Node Web | `{ app_token }` → `{ openim_token, openim_api_addr, group_id }` |
 
