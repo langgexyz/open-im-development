@@ -131,15 +131,23 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
 
 ```
 1. 用户在 Hub Web 节点广场点击「订阅公众号」
-   → Hub Server：POST /user/credential { uid, target_app_id }
+   Hub Web → Hub Server：POST /user/credential { uid, target_app_id }
+   Authorization: Bearer <hub_token>
    → 返回 { credential }
 
-2. Hub Web → Node Server：POST /auth/token { credential }
+2. Hub Web 跳转至 Node Web（浏览器导航，不是 API 调用）：
+   window.location.assign(node_web_addr + "/?credential=" + credential)
+   （Hub Web 不直接调用 Node Server）
+
+3. Node Web → Node Server：POST /auth/token { credential }
    → Node 验签 → GetOrCreate accounts(uid) → app_uid
    → OpenIM 注册 app_uid，加入订阅群（config.subscription_group_id）
    → 返回 { app_token, app_uid }
 
-3. Hub Web 跳转：node_web_addr/?token=<app_token>
+4. Node Web → Node Server：POST /auth/exchange { app_token }
+   → 返回 { openim_token, openim_api_addr, group_id }
+
+5. Node Web 存入 sessionStorage，跳转 /articles
 ```
 
 ### 流程六：读取文章
@@ -147,10 +155,11 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
 ```
 Node Web 入口（AuthGateway）：
 1. 检查 sessionStorage 是否有有效 openim_token → 有则直接跳 /articles
-2. 读取 URL ?token 参数（即 app_token）
-   → 无 token → 跳转 /error
-3. POST /auth/exchange { app_token } → openim_token
-4. 存入 sessionStorage，replaceState 清 URL，跳转 /articles
+2. 读取 URL ?credential 参数
+   → 无 credential → 跳转 /error
+3. POST /auth/token { credential } → { app_token }
+4. POST /auth/exchange { app_token } → { openim_token, openim_api_addr, group_id }
+5. 存入 sessionStorage，replaceState 清 URL，跳转 /articles
 
 /articles：
 → POST /msg/pull_msg_by_seq（Bearer openim_token，conversation_id: "group_0"）
@@ -199,9 +208,9 @@ Node Web 入口（AuthGateway）：
 
 - 展示节点完整信息：名称、头像、描述、AppId
 - 「订阅公众号」按钮触发：
-  1. `POST /user/credential { uid, target_app_id }` → `credential`
-  2. `POST <node.node_server_addr>/auth/token { credential }` → `app_token`
-  3. 跳转：`node.node_web_addr/?token=<app_token>`
+  1. `POST /user/credential { uid, target_app_id }` → `{ credential }`（仅调 Hub Server）
+  2. 浏览器跳转：`window.location.assign(node.node_web_addr + "/?credential=" + credential)`
+  （Hub Web 不调 Node Server，credential 由 Node Web 自行向 Node Server 兑换）
 
 ---
 
@@ -228,11 +237,13 @@ Node Web 入口（AuthGateway）：
 ```
 1. sessionStorage 有 openim_token → 直接跳 /articles
    （/articles 若收到 401，清除 sessionStorage 并跳回 / 重走认证流程）
-2. 读取 URL ?token（app_token）→ 无则跳 /error
-3. POST /auth/exchange { app_token } → { openim_token }
-4. 存入 sessionStorage：openim_token
-5. replaceState 清除 URL ?token 参数
-6. 跳转 /articles
+2. 读取 URL ?credential → 无则跳 /error
+3. POST /auth/token { credential } → { app_token }
+   → 失败则跳 /error（credential 过期或 app_id 不匹配）
+4. POST /auth/exchange { app_token } → { openim_token, openim_api_addr, group_id }
+5. 存入 sessionStorage：openim_token、openim_api_addr、group_id
+6. replaceState 清除 URL ?credential 参数
+7. 跳转 /articles
 ```
 
 ### 5.4 文章列表（`/articles`）
@@ -365,7 +376,7 @@ open-im-hub-web/
         NodeAdminPage.tsx   # 节点资料管理（流程四）
     api/
       hub.ts          # Hub Server API（register、login、credential、nodes、activate、profile）
-      node.ts         # Node Server /auth/token（订阅时调用）
+                      # Hub Web 不调用 Node Server，无 node.ts
     hooks/
       useAuth.ts      # UID + hub_token 管理
     components/
@@ -387,7 +398,7 @@ open-im-node-web/
       ArticleDetailPage.tsx
       ErrorPage.tsx
     api/
-      node.ts               # /auth/exchange
+      node.ts               # Node Server API：/auth/token（credential→app_token）+ /auth/exchange（app_token→openim_token）
       openim.ts             # OpenIM 群消息历史 API
     hooks/
       useSession.ts         # openim_token 管理

@@ -77,15 +77,42 @@ open-im 是一套**去中心化节点协议**，基于 OpenIM 构建。任何人
 
 原生移动 App 可以是通用协议客户端（支持接入任意节点），也可以是专用客户端（只接入特定业务类型的节点）。
 
-**Hub Web** 是 Hub Server 的 Web 门户，承担用户注册/登录、节点广场浏览、订阅流程发起（获取 `credential` 并调用节点 `/auth/token`）以及节点激活管理等职责，是当前主要的客户端形态。
+**Hub Web** 是 Hub Server 的 Web 门户，承担用户注册/登录、节点广场浏览、订阅流程发起（从 Hub Server 获取 `credential`，携带 credential 跳转至 Node Web）以及节点激活管理等职责，是当前主要的客户端形态。
 
 ---
 
-## 三、数据库设计
+## 三、通信边界
 
-### 3.1 Hub Server MySQL 表
+这是整个架构最重要的约束，所有实现必须严格遵守：
+
+| 调用方 → 被调用方 | 允许 | 方式 |
+|-----------------|------|------|
+| Hub Web → Hub Server | ✅ | HTTP API（用户注册/登录、credential 签发、节点管理）|
+| Node Web → Node Server | ✅ | HTTP API（auth/token、auth/exchange）|
+| Node Web → OpenIM | ✅ | HTTP API（消息拉取）|
+| Hub Server → Node Server | ✅ | HTTP（节点激活 activate、业务初始化 init 下发）|
+| Node Server → Hub Server | ✅ | gRPC（SignSession、PushNotify，节点签名认证）|
+| Hub Web → Node Web | ✅ | 浏览器跳转（redirect，携带 `?credential=<credential>`）|
+| **Hub Web → Node Server** | ❌ | **禁止**（Hub Web 不可直接调用任何节点服务）|
+| Node Web → Hub Server | ❌ | 禁止（Node Web 与 Hub Server 无直接通信）|
+
+**关键原则**：Hub Web 的职责边界终止于 Hub Server；Node Web 的职责边界始于 Node Server。跨域从 Hub Web 到 Node Web 的"跳转"是浏览器导航行为（`window.location.assign`），不是 API 调用，携带的 credential 由 Node Web 自行向 Node Server 兑换。
+
+---
+
+## 四、数据库设计
+
+### 4.1 Hub Server MySQL 表
 
 ```sql
+-- 用户账号
+CREATE TABLE users (
+    id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,  -- UID，全局唯一，字符串化传输（如 "10001"）
+    email      VARCHAR(255) NOT NULL UNIQUE,
+    password   VARCHAR(255) NOT NULL,                       -- bcrypt hash
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 节点注册信息
 CREATE TABLE nodes (
     id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -123,7 +150,7 @@ CREATE TABLE device_tokens (
 );
 ```
 
-### 3.2 Node Server MySQL 表（节点账号体系）
+### 4.2 Node Server MySQL 表（节点账号体系）
 
 ```sql
 -- 节点账号表：每个接入用户在本节点的账号
@@ -138,17 +165,36 @@ CREATE TABLE accounts (
 
 ---
 
-## 四、身份模型
+## 五、身份模型
 
-### 4.1 三级 ID 体系
+### 5.1 三级 ID 体系
 
 | ID | 类型 | 生成方 | 用途 |
 |----|------|--------|------|
-| `UID` | String | Hub Server | 用户在整个协议网络的全局唯一身份 |
-| `AppId` | String | Hub Server（UUID）| 节点在协议网络的全局唯一标识，激活时生成并下发 |
+| `UID` | String（uint64 字符串化，如 `"10001"`）| Hub Server（users 表 auto-increment）| 用户在整个协议网络的全局唯一身份 |
+| `AppId` | String（UUID v4）| Hub Server（节点激活时生成）| 节点在协议网络的全局唯一标识 |
 | `app_uid` | uint64 | accounts 表 auto-increment | 用户在该节点的本地 ID，同时作为 OpenIM userID |
 
-### 4.2 节点管理员账号
+### 5.2 hub_token 格式
+
+`hub_token` 是 Hub Server 签发给已登录用户的会话令牌，用于调用 Hub Server HTTP API。
+
+```
+格式：标准 JWT（Header.Payload.Signature）
+算法：HMAC-SHA256
+签名密钥：HUB_PRIVATE_KEY 的 hex 字符串（复用现有环境变量，无需新增）
+
+Payload：
+{
+  "uid":   "10001",      // users.id 字符串化
+  "email": "user@example.com",
+  "exp":   1234567890    // Unix 秒，建议 7 天
+}
+```
+
+Hub Server 所有需要登录的接口（`/user/credential`、`/node/activate`、`/node/profile` 等）均通过 `Authorization: Bearer <hub_token>` 携带，Hub Server 验证签名并从 payload 提取 `uid`。
+
+### 5.3 节点管理员账号
 
 管理员完成流程三（账号在节点上初始化）后，Node Server 将返回的 `app_uid` 作为 `admin_app_uid` 写入 `config.json`。此后管理员专属接口直接比较 `app_uid == config.admin_app_uid`，无需在 accounts 表中维护特殊标记。
 
@@ -156,9 +202,9 @@ CREATE TABLE accounts (
 
 ---
 
-## 五、密钥与信任链
+## 六、密钥与信任链
 
-### 5.1 EVM 密钥体系
+### 6.1 EVM 密钥体系
 
 | 密钥 | 持有方 | 用途 |
 |------|--------|------|
@@ -167,7 +213,7 @@ CREATE TABLE accounts (
 | `app_private_key` | 节点 config.json | 由 Hub Server 在激活时生成并加密下发；签发 `app_token` |
 | `app_public_key` | Hub Server nodes 表 | Hub Server 验证节点 gRPC 请求签名；节点身份标识 |
 
-### 5.2 节点请求签名（Node → Hub Server，gRPC metadata）
+### 6.2 节点请求签名（Node → Hub Server，gRPC metadata）
 
 所有节点发往 Hub Server 的 gRPC 调用均通过 `NewNodeSignInterceptor`（`internal/hub/client.go`）自动附加以下 metadata：
 
@@ -185,7 +231,7 @@ Hub Server 拦截器验证逻辑：
 2. 查 nodes 表：`app_public_key` 存在且 `status=1` 且未过期 → 节点已授权
 3. `|now - x-node-timestamp| ≤ 60s` → 防重放
 
-### 5.3 Hub Server 用户凭证（credential）
+### 6.3 Hub Server 用户凭证（credential）
 
 ```
 credential = base64url({ "UID": "...", "AppId": "...", "exp": ... }) + "." + hex(sig)
@@ -194,7 +240,7 @@ sig = Sign(keccak256(base64url(payload)), hub_private_key)
 
 Node Server 收到 credential 后，使用本地持有的 `hub_public_key` 自行验证签名，提取 `UID` 和 `AppId`，无需通过 gRPC 请求 Hub Server 验证。`AppId` 须与本节点的 `config.app_id` 匹配，防止跨节点重放。
 
-### 5.4 节点 Token（app_token，节点签发）
+### 6.4 节点 Token（app_token，节点签发）
 
 ```
 app_token = base64url(payload) + "." + hex(sig)
@@ -209,9 +255,9 @@ payload = {
 sig = Sign(keccak256(base64url(payload)), app_private_key)
 ```
 
-### 5.5 验证职责分工
+### 6.5 验证职责分工
 
-**App / Hub Web 侧（信任根）**：
+**Node Web 侧**：
 1. `ecrecover(app_token.sig) == app_public_key` → Token 是该节点签发的
 2. Token 未过期
 
@@ -230,9 +276,9 @@ sig = Sign(keccak256(base64url(payload)), app_private_key)
 
 ---
 
-## 六、核心流程
+## 七、核心流程
 
-### 6.1 节点注册（一次性）
+### 7.1 节点注册（一次性）
 
 ```
 1. 节点运营者启动 Node Server：
@@ -259,7 +305,7 @@ sig = Sign(keccak256(base64url(payload)), app_private_key)
 4. 管理员完成流程三（账号初始化）和流程四（业务初始化）via Hub Web
 ```
 
-### 6.2 节点心跳（Node Server 启动后持续）
+### 7.2 节点心跳（Node Server 启动后持续）
 
 ```
 Node Server 启动 → 立即发送，之后每 30s 一次：
@@ -271,7 +317,7 @@ Hub Server 验证签名 + 授权状态 → 更新 last_heartbeat
 若节点被禁用 → gRPC 返回错误，Node Server 记录告警日志
 ```
 
-### 6.3 用户接入节点（开户 + credential 验证）
+### 7.3 用户接入节点（订阅流程）
 
 ```
 1. Hub Web → Hub Server：POST /user/credential { uid, target_app_id }
@@ -279,31 +325,26 @@ Hub Server 验证签名 + 授权状态 → 更新 last_heartbeat
    → Hub Server 用 hub_private_key 签发 credential（绑定 UID + AppId + exp）
    → 返回 { credential }
 
-2. Hub Web → Node Server：POST /auth/token { credential }
+2. Hub Web 跳转至 Node Web：node_web_addr/?credential=<credential>
+   （浏览器导航，不是 API 调用；Hub Web 不直接调用 Node Server）
 
-3. Node Server 用本地 hub_public_key 验签 credential，校验 AppId 匹配本节点
+3. Node Web → Node Server：POST /auth/token { credential }
+   Node Server 用本地 hub_public_key 验签 credential，校验 AppId 匹配本节点
    → 提取 UID
+   → accounts 表 GetOrCreate(UID) → app_uid
+   → OpenIM 注册 app_uid（幂等），加入订阅群（config.subscription_group_id）
+   → app_private_key 签发 app_token
+   → 返回 { app_token, app_uid }
 
-4. Node Server 在 accounts 表 GetOrCreate(UID) → app_uid
+4. Node Web → Node Server：POST /auth/exchange { app_token }
+   Node Server 验证 app_token（ecrecover == app_public_key，未过期）
+   → 调 OpenIM Admin API 换取 openim_token
+   → 返回 { openim_token, openim_api_addr, group_id }
 
-5. Node Server 在 OpenIM 注册 app_uid（幂等），加入订阅群（config.subscription_group_id）
-
-6. Node Server 用 app_private_key 签发 app_token
-
-7. 返回 { app_token, app_uid } 给 Hub Web
+5. Node Web 用 openim_token 调 OpenIM API 拉取消息（直连节点 OpenIM）
 ```
 
-### 6.4 连接节点 OpenIM
-
-```
-1. Node Web / App → Node Server：POST /auth/exchange { app_token }
-2. Node Server 验证 app_token（ecrecover == app_public_key，未过期）
-3. Node Server 调 OpenIM Admin API → 换取 OpenIM 原生 token
-4. 返回 { openim_token, openim_api_addr, group_id }
-5. 客户端用 openim_token 连接节点 msggateway WebSocket 或调用 OpenIM API
-```
-
-### 6.5 消息推送
+### 7.4 消息推送
 
 ```
 节点运营者（或业务逻辑）发布群组消息
@@ -324,7 +365,7 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 
 ---
 
-## 七、应用层示例
+## 八、应用层示例
 
 协议层不感知业务内容。以下为典型应用场景，均由节点运营者在 Node Server 之上扩展实现：
 
@@ -339,7 +380,7 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 
 ---
 
-## 八、节点发现
+## 九、节点发现
 
 | 方式 | 说明 |
 |------|------|
@@ -348,19 +389,19 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 
 ---
 
-## 九、接口总览
+## 十、接口总览
 
-### 9.1 Node Server HTTP 接口
+### 10.1 Node Server HTTP 接口
 
 | 接口 | 调用方 | 用途 |
 |------|--------|------|
 | `GET  /node/info` | App / Hub Web | 节点元数据、app_public_key |
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
-| `POST /auth/token` | Hub Web | credential → app_token + app_uid |
+| `POST /auth/token` | Node Web | credential → `{ app_token, app_uid }` |
 | `POST /auth/exchange` | Node Web / App | app_token → `{ openim_token, openim_api_addr, group_id }` |
 | `POST /internal/after-group-msg` | OpenIM（内网）| webhook 触发推送 |
 
-### 9.2 Hub Server gRPC 接口（Node 调用，`:50051`）
+### 10.2 Hub Server gRPC 接口（Node 调用，`:50051`）
 
 所有方法均需 `x-app-*` 签名 metadata，Hub Server 拦截器统一验证。
 
@@ -369,7 +410,7 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 | `Heartbeat` | x-app-sig | 节点保活 |
 | `PushNotify` | x-app-sig | 离线推送转发 |
 
-### 9.3 Hub Server HTTP 接口（`:8080`）
+### 10.3 Hub Server HTTP 接口（`:8080`）
 
 | 接口 | 调用方 | 用途 |
 |------|--------|------|
@@ -383,7 +424,7 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 
 ---
 
-## 十、部署结构
+## 十一、部署结构
 
 ```yaml
 # 工程仓库
