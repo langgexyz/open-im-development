@@ -108,7 +108,7 @@ Hub Web：存入 sessionStorage，跳转 /nodes
 
 Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以下两层实现：
 
-- **OpenIM 层**：订阅群 `group_id="0"` 的 owner 为 `admin_node_uid`，OpenIM 原生保障只有群主可发消息
+- **OpenIM 层**：订阅群（`config.subscription_group_id`）的 owner 为 `admin_node_uid`，OpenIM 原生保障只有群主可发消息
 - **Node Server 层**：管理员专属接口（如 `/node/init`）直接比较 `node_uid == config.admin_node_uid`
 
 所有 accounts 表中的 node_uid 均为平等的"订阅者"，区分管理员与普通用户的唯一依据是 `config.json` 中的 `admin_node_uid`。
@@ -123,7 +123,8 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
    → Hub 写入 nodes 表：name、avatar、description
 
 2. Node Server → OpenIM Admin API：创建订阅群
-   group_id = "0"，owner = admin_node_uid
+   group_id = "0"（初始值），owner = admin_node_uid
+   → OpenIM 返回实际 group_id → 写入 config.json（`subscription_group_id`）
 
 ✅ 公众号上线，节点广场可被用户发现
 ```
@@ -137,7 +138,7 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
 
 2. Hub Web → Node Server：POST /auth/token { credential }
    → Node 验签 → GetOrCreate accounts(uid) → node_uid
-   → OpenIM 注册 node_uid，加入订阅群 group_id="0"
+   → OpenIM 注册 node_uid，加入订阅群（config.subscription_group_id）
    → 返回 { node_token, node_uid }
 
 3. Hub Web 跳转：node_web_addr/?token=<node_token>
@@ -236,21 +237,26 @@ Node Web 入口（AuthGateway）：
 
 ### 5.4 文章列表（`/articles`）
 
-每个节点 OpenIM 实例有且仅有一个订阅群，`group_id` 固定为 `"0"`，conversation_id 为 `"group_0"`。
+每个节点 OpenIM 实例有且仅有一个订阅群。`group_id` 存储在 Node Server 的 `config.json`（字段 `subscription_group_id`），通过 `/auth/exchange` 响应返回给 Node Web，`conversation_id = "group_" + group_id`。
 
 OpenIM API 基础 URL：`<node_openim_api_addr>`（由 Node Server 在 `/auth/exchange` 响应中一并返回，Node Web 存入 sessionStorage）。OpenIM `openim-api` 服务对用户 token 开放 `/msg/*` 接口。
+
+`/auth/exchange` 响应格式：
+```json
+{ "openim_token": "...", "openim_api_addr": "https://...", "group_id": "0" }
+```
 
 拉取文章（均需 `Authorization: Bearer <openim_token>`）：
 
 1. `POST /msg/get_conversations_has_read_and_max_seq`
    ```json
-   { "conversation_ids": ["group_0"] }
+   { "conversation_ids": ["group_<group_id>"] }
    ```
    → 获得 `max_seq`
 
 2. `POST /msg/pull_msg_by_seq`
    ```json
-   { "conversation_id": "group_0",
+   { "conversation_id": "group_<group_id>",
      "seq_ranges": [{ "begin": max(1, max_seq - 19), "end": max_seq }] }
    ```
    → 过滤 `content_type = "article"` 的 Custom Message
