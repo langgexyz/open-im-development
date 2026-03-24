@@ -106,9 +106,9 @@
 - 展示节点完整信息：名称、头像、描述、节点 ID
 - 「访问公众号」按钮：
   ```
-  window.location.href = `${node.ws_addr_base}/?credential=${user_credential}`
+  window.location.href = `${node.web_addr}/?credential=${user_credential}`
   ```
-  其中 `node.ws_addr_base` 为节点 Node Web 的 HTTP 地址（由 Hub Server `/nodes` 返回，见第五节）
+  其中 `node.web_addr` 为节点 Node Web 的 HTTP 地址（由 Hub Server `/nodes` 返回，见第五节）
 
 ---
 
@@ -147,20 +147,38 @@
 
 ### 4.4 文章列表（`/articles`）
 
-- 调用 OpenIM 群消息历史接口（`group_id = "0"`，`openim_token` 鉴权）
-- 过滤 `content_type = "article"` 的 Custom Message
+每个节点的 OpenIM 实例有且仅有一个订阅群，`group_id` 固定为 `"0"`，OpenIM 内对应的 conversation_id 为 `"group_0"`。Node Web 直接查询该固定 conversation，不需要动态查找。
+
+拉取文章列表的两步 OpenIM HTTP 接口（均需 `Authorization: Bearer <openim_token>` 请求头）：
+
+1. `POST /msg/get_conversations_has_read_and_max_seq`
+   ```json
+   { "conversation_ids": ["group_0"] }
+   ```
+   → 获得 `max_seq`
+
+2. `POST /msg/pull_msg_by_seq`
+   ```json
+   {
+     "conversation_id": "group_0",
+     "seq_ranges": [{ "begin": max_seq - 19, "end": max_seq }]
+   }
+   ```
+   → 返回消息列表，过滤 `content_type = "article"` 的 Custom Message
+
 - 列表项：
   - 左侧：标题（2 行截断）+ 日期
   - 右侧：封面图缩略图（`56×42px`，圆角）
-- 分页：滚动加载（每次 20 条）
+- 分页：滚动加载，每次取 20 条（seq 向前滑动窗口）
 - 点击 → `/articles/:msg_id`
 
 ### 4.5 文章阅读（`/articles/:msg_id`）
 
 - 从列表缓存或重新查询获取消息体
-- 取 `content_url` → `fetch(content_url)` → 获取 HTML 或 Markdown 正文
-  - HTML：`dangerouslySetInnerHTML`（需 DOMPurify 消毒）
-  - Markdown：`react-markdown` 渲染
+- 取 `content_url` → `fetch(content_url)` → 获取正文
+  - 响应 `Content-Type: text/html` 或内容含 `<!DOCTYPE` / `<html`：用 DOMPurify 消毒后 `dangerouslySetInnerHTML`
+  - 其他情况均视为 Markdown：`react-markdown` 渲染
+  - `content_url` 返回非 200：展示"内容加载失败"占位提示，不报错崩溃
 - 顶部：文章标题 + 封面图（全宽）+ 发布日期
 - 返回按钮 → `/articles`
 
@@ -181,7 +199,7 @@ GET /user/challenge?address=<eth_address>
 }
 ```
 
-`nonce` 为随机字符串，存内存（TTL 5 分钟），防重放。
+`nonce` 为随机字符串，存内存（TTL 5 分钟），防重放。Hub Server 重启后内存 nonce 全部失效，正在进行中的登录流程需重新发起 challenge；这是已知限制，可接受（登录流程耗时秒级，重启概率极低）。
 
 ### 5.2 验证签名并颁发 user_credential
 
@@ -292,6 +310,7 @@ open-im-node-web/
 | XSS（文章 HTML 内容）| `DOMPurify.sanitize()` 消毒后再注入 DOM |
 | nonce 重放攻击 | Hub Server 内存 nonce，TTL 5 分钟，消费后立即失效 |
 | sessionStorage 劫持 | HTTPS 部署，token 不写入 localStorage（跨 Tab 不共享）|
+| CORS | Hub Server `:8080` 需对 Hub Web 域名开放 CORS（`/user/challenge`、`/user/auth`、`/nodes`）；Node Server 需对 Node Web 域名开放 CORS（`/auth/token`、`/auth/exchange`）；OpenIM API 需对 Node Web 域名开放 CORS |
 
 ---
 
