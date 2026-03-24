@@ -42,16 +42,17 @@
 ③ /nodes/:id
    展示节点详情
    点击「访问公众号」
-   → 跳转至 http://<node-web-url>/?credential=<user_credential>
+   → POST node-server/auth/token { user_credential }  (Node Server，已有)
+   ← { user_token }（Node 私钥签发，节点专属）
+   → 跳转至 http://<node-web-url>/?token=<user_token>
 
 ────────────────────── 跳转 ──────────────────────
 
 【Node Web · node.example.com】
 
 ④ 路由入口（AuthGateway）
-   检测 URL 中 ?credential=xxx
-   → POST /auth/token  { user_credential }  (Node Server，已有) → user_token
-   → POST /auth/exchange { user_token }     (Node Server，已有) → openim_token
+   检测 URL 中 ?token=xxx
+   → POST /auth/exchange { user_token }  (Node Server，已有) → openim_token
    存入 sessionStorage，跳转 /articles
 
 ⑤ /articles
@@ -104,11 +105,11 @@
 ### 3.5 节点详情（`/nodes/:id`）
 
 - 展示节点完整信息：名称、头像、描述、节点 ID
-- 「访问公众号」按钮：
-  ```
-  window.location.href = `${node.web_addr}/?credential=${user_credential}`
-  ```
-  其中 `node.web_addr` 为节点 Node Web 的 HTTP 地址（由 Hub Server `/nodes` 返回，见第五节）
+- 「访问公众号」按钮触发以下流程：
+  1. `POST <node.api_addr>/auth/token { user_credential }` → `user_token`
+  2. 跳转：`window.location.href = \`${node.web_addr}/?token=${user_token}\``
+
+  其中 `node.api_addr` 为节点 Node Server API 地址，`node.web_addr` 为节点 Node Web 地址（均由 Hub Server `/nodes` 返回，见第五节）
 
 ---
 
@@ -118,10 +119,10 @@
 
 | 路由 | 页面 | 说明 |
 |------|------|------|
-| `/` | 认证网关（AuthGateway）| 处理 credential 交换，无 UI |
+| `/` | 认证网关（AuthGateway）| 用 user_token 换取 openim_token，无 UI |
 | `/articles` | 文章列表 | 公众号文章列表 |
 | `/articles/:msg_id` | 文章阅读 | 文章正文渲染 |
-| `/error` | 错误页 | 认证失败或无 credential 时展示 |
+| `/error` | 错误页 | 认证失败或无 token 时展示 |
 
 ### 4.2 视觉风格
 
@@ -136,13 +137,12 @@
 
 ```
 1. 检查 sessionStorage 中是否有有效 openim_token → 有则直接跳 /articles
-2. 读取 URL ?credential 参数
-   → 无 credential → 跳转 /error（展示"请通过 Hub 访问"及 Hub 链接）
-3. POST /auth/token  { user_credential } → user_token
-4. POST /auth/exchange { user_token }   → openim_token, node_uid
-5. 存入 sessionStorage：openim_token、node_uid
-6. 清除 URL 中的 credential 参数（replaceState，防止分享时泄露）
-7. 跳转 /articles
+2. 读取 URL ?token 参数（即 user_token，由 Hub Web 调用 Node Server 换取后携带过来）
+   → 无 token → 跳转 /error（展示"请通过 Hub 访问"及 Hub 链接）
+3. POST /auth/exchange { user_token } → openim_token, node_uid
+4. 存入 sessionStorage：openim_token、node_uid
+5. 清除 URL 中的 token 参数（replaceState，防止分享时泄露）
+6. 跳转 /articles
 ```
 
 ### 4.4 文章列表（`/articles`）
@@ -225,7 +225,7 @@ Content-Type: application/json
 
 ### 5.3 节点列表扩展字段
 
-`GET /nodes` 响应中，每个节点新增 `web_addr` 字段，指向该节点 Node Web 的 HTTP 地址：
+`GET /nodes` 响应中，每个节点新增两个字段：
 
 ```json
 {
@@ -233,22 +233,26 @@ Content-Type: application/json
   "name": "科技快讯",
   "description": "...",
   "avatar": "...",
+  "api_addr": "https://node.example.com:8080",
   "web_addr": "https://node.example.com"
 }
 ```
 
-`web_addr` 在节点注册/心跳时由节点运营者配置，存入 `nodes` 表新增列。
+- `api_addr`：节点 Node Server HTTP 地址，Hub Web 用于调用 `/auth/token`
+- `web_addr`：节点 Node Web 地址，Hub Web 跳转目标
+
+两字段均在节点注册/心跳时由节点运营者配置，存入 `nodes` 表新增列。
 
 ---
 
 ## 六、Node Server 改动
 
-**零改动**。Node Web 直接复用已有接口：
+**零改动**。Hub Web 和 Node Web 直接复用已有接口：
 
-| 接口 | 用途 |
-|------|------|
-| `POST /auth/token` | 验证 user_credential，颁发 user_token（Node 签发）|
-| `POST /auth/exchange` | user_token → openim_token |
+| 调用方 | 接口 | 用途 |
+|--------|------|------|
+| Hub Web | `POST /auth/token` | 验证 user_credential，颁发 user_token（Node 签发）|
+| Node Web | `POST /auth/exchange` | user_token → openim_token |
 
 ---
 
@@ -269,6 +273,7 @@ open-im-hub-web/
     hooks/
       useWallet.ts    # MetaMask 连接与签名
       useAuth.ts      # user_credential 管理
+      useNodeToken.ts # 调用 Node Server /auth/token，换取 user_token
     components/
       NodeCard.tsx
       Header.tsx
@@ -306,7 +311,7 @@ open-im-node-web/
 
 | 风险 | 缓解措施 |
 |------|---------|
-| credential 泄露（URL 分享）| AuthGateway 完成后立即 `replaceState` 清除 URL 参数 |
+| user_token 泄露（URL 分享）| AuthGateway 完成后立即 `replaceState` 清除 URL 参数；user_credential 不出现在 URL 中，仅在 Hub Web sessionStorage 中存储 |
 | XSS（文章 HTML 内容）| `DOMPurify.sanitize()` 消毒后再注入 DOM |
 | nonce 重放攻击 | Hub Server 内存 nonce，TTL 5 分钟，消费后立即失效 |
 | sessionStorage 劫持 | HTTPS 部署，token 不写入 localStorage（跨 Tab 不共享）|
