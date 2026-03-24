@@ -66,19 +66,16 @@ Hub Web：存入 sessionStorage，跳转 /nodes
 
 ```
 1. 管理员启动 Node Server
-   → Node 生成随机 code（存内存，一次性）
+   → Node 生成随机 code（64 字符 hex，即 32 字节随机值，存内存，一次性，从启动日志获取）
    → 仅暴露 POST /node/activate?code= 端点
 
-2. 管理员在 Hub Web 填写：node_server_addr、code
+2. 管理员在 Hub Web 填写：node_server_addr、node_web_addr（仅 origin，如 https://node.example.com）、code
    → Hub Server 探活：GET node_server_addr/health → 200 OK
    → Hub 生成：AppId、app_private_key、app_public_key
-   → Hub 写入 nodes 表：{ AppId, app_public_key, node_server_addr }
-
-3. 管理员在 Hub Web 填写：node_server_addr、node_web_addr、code
    → Hub 写入 nodes 表：{ AppId, app_public_key, node_server_addr, node_web_addr, admin_uid }
 
-4. Hub → Node：POST node_server_addr/node/activate?code=xxxx
-   Body：AES-256-GCM(key=SHA-256(code)) 加密 { AppId, app_private_key, app_public_key,
+3. Hub → Node：POST node_server_addr/node/activate?code=xxxx
+   Body：AES-256-GCM(key=SHA-256(hex_decode(code))) 加密 { AppId, app_private_key, app_public_key,
                           hub_server_addr, hub_public_key, hub_web_origin }
    → Node 解密写入 config.json，code 立即失效
 
@@ -99,9 +96,10 @@ Hub Web：存入 sessionStorage，跳转 /nodes
    → GetOrCreate accounts(admin_uid) → admin_node_uid
    → OpenIM 注册 admin_node_uid
    → 用 app_private_key 签发 node_token
-   → 返回 { node_token, node_uid: admin_node_uid }
+   → 返回 { node_token, node_uid: <admin_node_uid> }（wire key 为 node_uid）
+   → Node Server 将此 node_uid 作为 admin_node_uid 写入 config.json
 
-✅ admin_node_uid 写入 config.json，后续业务操作以此身份执行
+✅ config.admin_node_uid 就绪，流程四依赖此值，须在流程四之前完成
 ```
 
 ### 权限模型：无需 role 字段
@@ -123,7 +121,7 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
    → Hub 写入 nodes 表：name、avatar、description
 
 2. Node Server → OpenIM Admin API：创建订阅群
-   group_id = "0"（初始值），owner = admin_node_uid
+   owner = config.admin_node_uid（须先完成流程三）
    → OpenIM 返回实际 group_id → 写入 config.json（`subscription_group_id`）
 
 ✅ 公众号上线，节点广场可被用户发现
@@ -174,8 +172,10 @@ Node Web 入口（AuthGateway）：
 | `/register` | 注册页 | 邮箱注册，获取 UID |
 | `/nodes` | 节点广场 | 所有已注册节点列表 |
 | `/nodes/:app_id` | 节点详情 | 节点信息 + 订阅入口 |
+| `/admin/activate` | 节点激活 | 管理员填写 node_server_addr、node_web_addr、code（流程二）|
+| `/admin/nodes/:app_id` | 节点管理 | 管理员设置公众号资料（流程四）；仅节点 admin_uid 可见 |
 
-未登录时访问 `/nodes` 或 `/nodes/:app_id` → 重定向至 `/login`。
+未登录时访问任何路由 → 重定向至 `/login`。`/admin/*` 路由额外校验当前用户是否为该节点的 admin_uid。
 
 ### 4.2 视觉风格
 
@@ -243,7 +243,7 @@ OpenIM API 基础 URL：`<node_openim_api_addr>`（由 Node Server 在 `/auth/ex
 
 `/auth/exchange` 响应格式：
 ```json
-{ "openim_token": "...", "openim_api_addr": "https://...", "group_id": "0" }
+{ "openim_token": "...", "openim_api_addr": "https://...", "group_id": "<subscription_group_id>" }
 ```
 
 拉取文章（均需 `Authorization: Bearer <openim_token>`）：
@@ -305,7 +305,7 @@ Authorization: Bearer <hub_token>（管理员）
 
 Hub Server 将激活请求中的 hub_token UID 记录为该节点的 admin_uid（存入 nodes 表），后续 `/node/profile` 等管理接口校验 `hub_token.UID == nodes.admin_uid`。
 
-激活包使用 AES-256-GCM，key = SHA-256(code)（code 为 32 字节随机值，hex 编码，管理员从 Node Server 启动日志获取）。
+激活包使用 AES-256-GCM，key = SHA-256(hex_decode(code))（code 为 64 字符 hex 字符串，即 32 字节随机值，管理员从 Node Server 启动日志获取；node_web_addr 须为纯 origin，不含路径）。
 ```
 
 ### 6.4 设置公众号资料
@@ -340,7 +340,7 @@ Authorization: Bearer <hub_token>（管理员）
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
 | `POST /node/init` | Hub Server | 接收公众号资料，创建 OpenIM 订阅群；Hub Server 用 `hub_private_key` 对请求签名（header: `X-Hub-Sig`），Node 用 `hub_public_key` 验签 |
 | `POST /auth/token` | Hub Web | credential → node_token + node_uid |
-| `POST /auth/exchange` | Node Web | node_token → `{ openim_token, openim_api_addr }` |
+| `POST /auth/exchange` | Node Web | node_token → `{ openim_token, openim_api_addr, group_id }` |
 
 ---
 
@@ -357,8 +357,11 @@ open-im-hub-web/
       NodesPage.tsx
       NodeDetailPage.tsx
       ErrorPage.tsx
+      admin/
+        ActivatePage.tsx    # 节点激活（流程二）
+        NodeAdminPage.tsx   # 节点资料管理（流程四）
     api/
-      hub.ts          # Hub Server API（register、login、credential、nodes）
+      hub.ts          # Hub Server API（register、login、credential、nodes、activate、profile）
       node.ts         # Node Server /auth/token（订阅时调用）
     hooks/
       useAuth.ts      # UID + hub_token 管理
