@@ -17,7 +17,7 @@ export default function NodeAdminPage() {
     getNode(hubToken, app_id).then(node => {
       if (node.admin_uid && uid !== node.admin_uid) navigate('/nodes', { replace: true })
     }).catch(() => navigate('/nodes', { replace: true }))
-  }, [hubToken, app_id, uid])
+  }, [hubToken, app_id, uid, navigate])
 
   function set(key: string) {
     return (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
