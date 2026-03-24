@@ -73,7 +73,7 @@ open-im 是一套**去中心化节点协议**，基于 OpenIM 构建。任何人
 
 ### 2.3 App / Hub Web（客户端）
 
-接入协议网络的客户端，是整个信任链的执行者。内硬编码 `hub_public_key`（以太坊地址），用于离线验证 Hub Server 签名的 `credential` 和节点签发的 `node_token`。
+接入协议网络的客户端，是整个信任链的执行者。内硬编码 `hub_public_key`（以太坊地址），用于离线验证 Hub Server 签名的 `credential` 和节点签发的 `app_token`。
 
 原生移动 App 可以是通用协议客户端（支持接入任意节点），也可以是专用客户端（只接入特定业务类型的节点）。
 
@@ -127,8 +127,8 @@ CREATE TABLE device_tokens (
 
 ```sql
 -- 节点账号表：每个接入用户在本节点的账号
--- id 即 node_uid，同时作为 OpenIM userID（存为字符串如 "10001"）
--- admin_node_uid 存储在 config.json，不以特殊账号行表示
+-- id 即 app_uid，同时作为 OpenIM userID（存为字符串如 "10001"）
+-- admin_app_uid 存储在 config.json，不以特殊账号行表示
 CREATE TABLE accounts (
     id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     uid        VARCHAR(64) NOT NULL UNIQUE,
@@ -146,11 +146,11 @@ CREATE TABLE accounts (
 |----|------|--------|------|
 | `UID` | String | Hub Server | 用户在整个协议网络的全局唯一身份 |
 | `AppId` | String | Hub Server（UUID）| 节点在协议网络的全局唯一标识，激活时生成并下发 |
-| `node_uid` | uint64 | accounts 表 auto-increment | 用户在该节点的本地 ID，同时作为 OpenIM userID |
+| `app_uid` | uint64 | accounts 表 auto-increment | 用户在该节点的本地 ID，同时作为 OpenIM userID |
 
 ### 4.2 节点管理员账号
 
-管理员完成流程三（账号在节点上初始化）后，Node Server 将返回的 `node_uid` 作为 `admin_node_uid` 写入 `config.json`。此后管理员专属接口直接比较 `node_uid == config.admin_node_uid`，无需在 accounts 表中维护特殊标记。
+管理员完成流程三（账号在节点上初始化）后，Node Server 将返回的 `app_uid` 作为 `admin_app_uid` 写入 `config.json`。此后管理员专属接口直接比较 `app_uid == config.admin_app_uid`，无需在 accounts 表中维护特殊标记。
 
 订阅群 ID 在流程四（公众号业务初始化）完成后由 OpenIM 创建群时返回，写入 `config.json`（字段 `subscription_group_id`），不使用固定值。
 
@@ -164,7 +164,7 @@ CREATE TABLE accounts (
 |------|--------|------|
 | `hub_private_key` | Hub Server | 签发 `credential`（绑定 UID+AppId+exp） |
 | `hub_public_key` | App（硬编码）、节点 config.json（激活时写入）| Node Server / App 验证 credential |
-| `app_private_key` | 节点 config.json | 由 Hub Server 在激活时生成并加密下发；签发 `node_token` |
+| `app_private_key` | 节点 config.json | 由 Hub Server 在激活时生成并加密下发；签发 `app_token` |
 | `app_public_key` | Hub Server nodes 表 | Hub Server 验证节点 gRPC 请求签名；节点身份标识 |
 
 ### 5.2 节点请求签名（Node → Hub Server，gRPC metadata）
@@ -194,15 +194,15 @@ sig = Sign(keccak256(base64url(payload)), hub_private_key)
 
 Node Server 收到 credential 后，使用本地持有的 `hub_public_key` 自行验证签名，提取 `UID` 和 `AppId`，无需通过 gRPC 请求 Hub Server 验证。`AppId` 须与本节点的 `config.app_id` 匹配，防止跨节点重放。
 
-### 5.4 节点 Token（node_token，节点签发）
+### 5.4 节点 Token（app_token，节点签发）
 
 ```
-node_token = base64url(payload) + "." + hex(sig)
+app_token = base64url(payload) + "." + hex(sig)
 
 payload = {
   "UID":      "...",
   "AppId":    "...",
-  "node_uid": 10001,        // uint64，accounts.id
+  "app_uid": 10001,        // uint64，accounts.id
   "exp":      1234567890
 }
 
@@ -212,19 +212,19 @@ sig = Sign(keccak256(base64url(payload)), app_private_key)
 ### 5.5 验证职责分工
 
 **App / Hub Web 侧（信任根）**：
-1. `ecrecover(node_token.sig) == app_public_key` → Token 是该节点签发的
+1. `ecrecover(app_token.sig) == app_public_key` → Token 是该节点签发的
 2. Token 未过期
 
 **Node Server 侧**：
-1. `ecrecover(node_token.sig) == app_public_key`（本节点）→ Token 未被篡改
+1. `ecrecover(app_token.sig) == app_public_key`（本节点）→ Token 未被篡改
 2. Token 未过期
 
 | 攻击场景 | 防御方 | 机制 |
 |---------|--------|------|
 | 未授权节点接入 | Hub Server | 节点 `app_public_key` 未在 nodes 表注册则 gRPC 请求被拒绝 |
 | 节点被撤销后继续服务 | Hub Server | gRPC 拦截器验证 `status=1`，禁用节点请求被拒绝 |
-| 伪造 node_token | Node Server | ecrecover 必须等于本节点 `app_public_key` |
-| 跨节点 Token 重放 | Node Server / App | credential 绑定了 `AppId`，Node 校验匹配；node_token 含 AppId |
+| 伪造 app_token | Node Server | ecrecover 必须等于本节点 `app_public_key` |
+| 跨节点 Token 重放 | Node Server / App | credential 绑定了 `AppId`，Node 校验匹配；app_token 含 AppId |
 | 用户冒充他人 UID | Node Server | UID 从 Hub Server 签名的 credential 中提取，本地验签保证真实性 |
 | 节点请求被重放 | Hub Server | `x-node-timestamp` 校验 ±60s |
 
@@ -284,20 +284,20 @@ Hub Server 验证签名 + 授权状态 → 更新 last_heartbeat
 3. Node Server 用本地 hub_public_key 验签 credential，校验 AppId 匹配本节点
    → 提取 UID
 
-4. Node Server 在 accounts 表 GetOrCreate(UID) → node_uid
+4. Node Server 在 accounts 表 GetOrCreate(UID) → app_uid
 
-5. Node Server 在 OpenIM 注册 node_uid（幂等），加入订阅群（config.subscription_group_id）
+5. Node Server 在 OpenIM 注册 app_uid（幂等），加入订阅群（config.subscription_group_id）
 
-6. Node Server 用 app_private_key 签发 node_token
+6. Node Server 用 app_private_key 签发 app_token
 
-7. 返回 { node_token, node_uid } 给 Hub Web
+7. 返回 { app_token, app_uid } 给 Hub Web
 ```
 
 ### 6.4 连接节点 OpenIM
 
 ```
-1. Node Web / App → Node Server：POST /auth/exchange { node_token }
-2. Node Server 验证 node_token（ecrecover == app_public_key，未过期）
+1. Node Web / App → Node Server：POST /auth/exchange { app_token }
+2. Node Server 验证 app_token（ecrecover == app_public_key，未过期）
 3. Node Server 调 OpenIM Admin API → 换取 OpenIM 原生 token
 4. 返回 { openim_token, openim_api_addr, group_id }
 5. 客户端用 openim_token 连接节点 msggateway WebSocket 或调用 OpenIM API
@@ -312,7 +312,7 @@ OpenIM 实时送达在线用户（Hub 不经手消息内容）
     ↓
 Node Server webhook（afterSendGroupMsg）触发
     ↓
-Node Server 查群成员 + 在线状态 → 得到离线 node_uid 列表
+Node Server 查群成员 + 在线状态 → 得到离线 app_uid 列表
     ↓
 SELECT uid FROM accounts WHERE id IN (...)
     ↓
@@ -356,8 +356,8 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 |------|--------|------|
 | `GET  /node/info` | App / Hub Web | 节点元数据、app_public_key |
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
-| `POST /auth/token` | Hub Web | credential → node_token + node_uid |
-| `POST /auth/exchange` | Node Web / App | node_token → `{ openim_token, openim_api_addr, group_id }` |
+| `POST /auth/token` | Hub Web | credential → app_token + app_uid |
+| `POST /auth/exchange` | Node Web / App | app_token → `{ openim_token, openim_api_addr, group_id }` |
 | `POST /internal/after-group-msg` | OpenIM（内网）| webhook 触发推送 |
 
 ### 9.2 Hub Server gRPC 接口（Node 调用，`:50051`）

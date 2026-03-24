@@ -27,7 +27,7 @@
   ↓
 Node Server :8080（API Gateway）
   ├── /auth/*、/node/info、/node/activate   → 自身处理
-  └── /biz/*                               → 验证 node_token
+  └── /biz/*                               → 验证 app_token
                                               注入 X-UID、X-Node-UID
                                               etcd 查询后端地址
                                               httputil.ReverseProxy 转发
@@ -55,7 +55,7 @@ etcd（OpenIM 现有部署）
 
 ### 2.3 权限模型
 
-**部署即授权**。`open-im-official-account-service` 与 `open-im-node-server` 由同一运营者部署，Node Server 网关只校验 node_token 合法性（确认是本节点的合法用户），不区分角色。发布权限由部署边界保证，无需代码层面的角色判断。
+**部署即授权**。`open-im-official-account-service` 与 `open-im-node-server` 由同一运营者部署，Node Server 网关只校验 app_token 合法性（确认是本节点的合法用户），不区分角色。发布权限由部署边界保证，无需代码层面的角色判断。
 
 ---
 
@@ -82,11 +82,11 @@ etcd（OpenIM 现有部署）
 
 4. 管理员完成账号初始化（流程三）：
    Hub Web → Hub Server POST /user/credential → Node Server POST /auth/token
-   → admin_node_uid 写入 config.json
+   → admin_app_uid 写入 config.json
 
 5. 管理员设置公众号资料（流程四）：
    Hub Web → Hub Server POST /node/profile → Node Server POST /node/init
-   → Node 创建订阅群（owner = admin_node_uid）
+   → Node 创建订阅群（owner = admin_app_uid）
    → OpenIM 返回实际 group_id → 写入 config.json（subscription_group_id）
 ```
 
@@ -141,7 +141,7 @@ POST /node/activate?code=xxxx
 
 ```
 POST /biz/articles/publish
-Authorization: Bearer <node_token>（由 Node Server 网关验证）
+Authorization: Bearer <app_token>（由 Node Server 网关验证）
 
 请求体（multipart/form-data）：
   title      string   文章标题
@@ -174,8 +174,8 @@ App 直接调用 OpenIM 消息 API：
 ### 6.1 发布文章
 
 ```
-1. App → POST /biz/articles/publish（携带 node_token + 文章文件）
-2. Node Server 验证 node_token
+1. App → POST /biz/articles/publish（携带 app_token + 文章文件）
+2. Node Server 验证 app_token
    - 验证失败 → 返回 401
    - 验证通过 → 注入 X-UID、X-Node-UID → etcd 查地址 → 转发
 3. 公众号服务：
@@ -230,7 +230,7 @@ etcd value: http://127.0.0.1:8081
 ### 7.3 `internal/gateway/`（新增）
 
 `/biz/*` 路由处理：
-1. 验证 node_token（复用现有 `internal/token` 逻辑）
+1. 验证 app_token（复用现有 `internal/token` 逻辑）
 2. 验证通过 → 注入 `X-UID`、`X-Node-UID` 请求头
 3. 按路径第一段查路由表取后端地址 → `httputil.ReverseProxy` 转发
 4. 路由表中无对应服务 → 返回 404

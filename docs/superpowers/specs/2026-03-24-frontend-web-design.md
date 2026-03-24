@@ -29,7 +29,7 @@
 |----|------|--------|--------|------|
 | `UID` | String | Hub Server（注册时）| 全局 | 用户在整个协议网络的唯一标识，跨节点不变 |
 | `AppId` | String | Hub Server（节点激活时）| 全局 | 节点在协议网络的唯一标识 |
-| `node_uid` | uint64 | Node Server accounts 表 auto-increment | 节点内 | 用户在该节点的本地 ID，同时作为 OpenIM userID；同一用户在不同节点的 node_uid 不同 |
+| `app_uid` | uint64 | Node Server accounts 表 auto-increment | 节点内 | 用户在该节点的本地 ID，同时作为 OpenIM userID；同一用户在不同节点的 app_uid 不同 |
 
 ### 2.2 密钥体系
 
@@ -37,7 +37,7 @@
 |------|--------|--------|------|
 | `hub_private_key` | Hub Server | Hub Server | 签发 `credential` |
 | `hub_public_key` | Hub Server | 节点 config.json（激活时写入）| Node Server 验证 credential |
-| `app_private_key` | Hub Server（激活时生成）| 节点 config.json | 签发 `node_token` |
+| `app_private_key` | Hub Server（激活时生成）| 节点 config.json | 签发 `app_token` |
 | `app_public_key` | Hub Server（激活时生成）| Hub Server nodes 表 | Hub 验证节点请求签名 |
 
 ### 2.3 Token 体系
@@ -46,7 +46,7 @@
 |-------|--------|------|------|
 | `hub_token` | Hub Server | JWT | 用户登录 Hub Web 的会话凭证 |
 | `credential` | Hub Server | `base64url({UID, AppId, exp}) + "." + sig` | Hub 向特定节点证明用户身份，`hub_private_key` 签发 |
-| `node_token` | Node Server | `base64url({UID, AppId, node_uid, exp}) + "." + sig` | 用户访问节点资源的令牌，`app_private_key` 签发 |
+| `app_token` | Node Server | `base64url({UID, AppId, app_uid, exp}) + "." + sig` | 用户访问节点资源的令牌，`app_private_key` 签发 |
 | `openim_token` | OpenIM | 原生 token | 调用 OpenIM API 读取消息 |
 
 ---
@@ -93,23 +93,23 @@ Hub Web：存入 sessionStorage，跳转 /nodes
 
 2. Hub Web → Node Server：POST /auth/token { credential }
    → Node 用 hub_public_key 验签，校验 app_id 匹配本节点
-   → GetOrCreate accounts(admin_uid) → admin_node_uid
-   → OpenIM 注册 admin_node_uid
-   → 用 app_private_key 签发 node_token
-   → 返回 { node_token, node_uid: <admin_node_uid> }（wire key 为 node_uid）
-   → Node Server 将此 node_uid 作为 admin_node_uid 写入 config.json
+   → GetOrCreate accounts(admin_uid) → admin_app_uid
+   → OpenIM 注册 admin_app_uid
+   → 用 app_private_key 签发 app_token
+   → 返回 { app_token, app_uid: <admin_app_uid> }（wire key 为 app_uid）
+   → Node Server 将此 app_uid 作为 admin_app_uid 写入 config.json
 
-✅ config.admin_node_uid 就绪，流程四依赖此值，须在流程四之前完成
+✅ config.admin_app_uid 就绪，流程四依赖此值，须在流程四之前完成
 ```
 
 ### 权限模型：无需 role 字段
 
 Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以下两层实现：
 
-- **OpenIM 层**：订阅群（`config.subscription_group_id`）的 owner 为 `admin_node_uid`，OpenIM 原生保障只有群主可发消息
-- **Node Server 层**：管理员专属接口（如 `/node/init`）直接比较 `node_uid == config.admin_node_uid`
+- **OpenIM 层**：订阅群（`config.subscription_group_id`）的 owner 为 `admin_app_uid`，OpenIM 原生保障只有群主可发消息
+- **Node Server 层**：管理员专属接口（如 `/node/init`）直接比较 `app_uid == config.admin_app_uid`
 
-所有 accounts 表中的 node_uid 均为平等的"订阅者"，区分管理员与普通用户的唯一依据是 `config.json` 中的 `admin_node_uid`。
+所有 accounts 表中的 app_uid 均为平等的"订阅者"，区分管理员与普通用户的唯一依据是 `config.json` 中的 `admin_app_uid`。
 
 ### 流程四：公众号业务初始化
 
@@ -121,7 +121,7 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
    → Hub 写入 nodes 表：name、avatar、description
 
 2. Node Server → OpenIM Admin API：创建订阅群
-   owner = config.admin_node_uid（须先完成流程三）
+   owner = config.admin_app_uid（须先完成流程三）
    → OpenIM 返回实际 group_id → 写入 config.json（`subscription_group_id`）
 
 ✅ 公众号上线，节点广场可被用户发现
@@ -135,11 +135,11 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
    → 返回 { credential }
 
 2. Hub Web → Node Server：POST /auth/token { credential }
-   → Node 验签 → GetOrCreate accounts(uid) → node_uid
-   → OpenIM 注册 node_uid，加入订阅群（config.subscription_group_id）
-   → 返回 { node_token, node_uid }
+   → Node 验签 → GetOrCreate accounts(uid) → app_uid
+   → OpenIM 注册 app_uid，加入订阅群（config.subscription_group_id）
+   → 返回 { app_token, app_uid }
 
-3. Hub Web 跳转：node_web_addr/?token=<node_token>
+3. Hub Web 跳转：node_web_addr/?token=<app_token>
 ```
 
 ### 流程六：读取文章
@@ -147,9 +147,9 @@ Node 不需要在 `accounts` 表中维护 `role` 字段。权限判断通过以�
 ```
 Node Web 入口（AuthGateway）：
 1. 检查 sessionStorage 是否有有效 openim_token → 有则直接跳 /articles
-2. 读取 URL ?token 参数（即 node_token）
+2. 读取 URL ?token 参数（即 app_token）
    → 无 token → 跳转 /error
-3. POST /auth/exchange { node_token } → openim_token
+3. POST /auth/exchange { app_token } → openim_token
 4. 存入 sessionStorage，replaceState 清 URL，跳转 /articles
 
 /articles：
@@ -200,8 +200,8 @@ Node Web 入口（AuthGateway）：
 - 展示节点完整信息：名称、头像、描述、AppId
 - 「订阅公众号」按钮触发：
   1. `POST /user/credential { uid, target_app_id }` → `credential`
-  2. `POST <node.node_server_addr>/auth/token { credential }` → `node_token`
-  3. 跳转：`node.node_web_addr/?token=<node_token>`
+  2. `POST <node.node_server_addr>/auth/token { credential }` → `app_token`
+  3. 跳转：`node.node_web_addr/?token=<app_token>`
 
 ---
 
@@ -211,7 +211,7 @@ Node Web 入口（AuthGateway）：
 
 | 路由 | 页面 | 说明 |
 |------|------|------|
-| `/` | 认证网关（AuthGateway）| node_token → openim_token，无 UI |
+| `/` | 认证网关（AuthGateway）| app_token → openim_token，无 UI |
 | `/articles` | 文章列表 | 公众号文章列表（微信公众号风格）|
 | `/articles/:msg_id` | 文章阅读 | 文章正文渲染 |
 | `/error` | 错误页 | 无 token 或认证失败时展示 |
@@ -228,8 +228,8 @@ Node Web 入口（AuthGateway）：
 ```
 1. sessionStorage 有 openim_token → 直接跳 /articles
    （/articles 若收到 401，清除 sessionStorage 并跳回 / 重走认证流程）
-2. 读取 URL ?token（node_token）→ 无则跳 /error
-3. POST /auth/exchange { node_token } → { openim_token }
+2. 读取 URL ?token（app_token）→ 无则跳 /error
+3. POST /auth/exchange { app_token } → { openim_token }
 4. 存入 sessionStorage：openim_token
 5. replaceState 清除 URL ?token 参数
 6. 跳转 /articles
@@ -339,8 +339,8 @@ Authorization: Bearer <hub_token>（管理员）
 |------|--------|------|
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
 | `POST /node/init` | Hub Server | 接收公众号资料，创建 OpenIM 订阅群；Hub Server 用 `hub_private_key` 对请求签名（header: `X-Hub-Sig`），Node 用 `hub_public_key` 验签 |
-| `POST /auth/token` | Hub Web | credential → node_token + node_uid |
-| `POST /auth/exchange` | Node Web | node_token → `{ openim_token, openim_api_addr, group_id }` |
+| `POST /auth/token` | Hub Web | credential → app_token + app_uid |
+| `POST /auth/exchange` | Node Web | app_token → `{ openim_token, openim_api_addr, group_id }` |
 
 ---
 
@@ -379,7 +379,7 @@ open-im-hub-web/
 open-im-node-web/
   src/
     pages/
-      AuthGateway.tsx       # node_token → openim_token（无 UI）
+      AuthGateway.tsx       # app_token → openim_token（无 UI）
       ArticleListPage.tsx
       ArticleDetailPage.tsx
       ErrorPage.tsx
@@ -402,7 +402,7 @@ open-im-node-web/
 
 | 风险 | 缓解措施 |
 |------|---------|
-| node_token 泄露（URL 分享）| AuthGateway 完成后立即 `replaceState` 清除 URL 参数 |
+| app_token 泄露（URL 分享）| AuthGateway 完成后立即 `replaceState` 清除 URL 参数 |
 | XSS（文章 HTML 内容）| `DOMPurify.sanitize()` 消毒后再注入 DOM |
 | credential 跨节点重放 | credential 绑定 AppId，Node 校验 app_id 是否匹配本节点 |
 | sessionStorage 劫持 | HTTPS 部署，token 不写入 localStorage |
