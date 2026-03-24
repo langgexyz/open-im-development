@@ -130,15 +130,6 @@ CREATE TABLE nodes (
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 一次性激活码
-CREATE TABLE activation_codes (
-    id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    code       VARCHAR(64) NOT NULL UNIQUE,
-    used       BOOLEAN DEFAULT FALSE,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- 用户设备 token（APNs/FCM）
 CREATE TABLE device_tokens (
     id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -398,7 +389,7 @@ Hub Server 验证节点签名 + 授权状态 → APNs / FCM
 | `GET  /node/info` | App / Hub Web | 节点元数据、app_public_key |
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
 | `POST /auth/token` | Node Web | credential → `{ app_token, app_uid }` |
-| `POST /auth/exchange` | Node Web / App | app_token → `{ openim_token, openim_api_addr, group_id }` |
+| `POST /auth/exchange` | Node Web / App | `{ app_token }` → `{ openim_token, openim_api_addr, group_id }`（openim_api_addr 和 group_id 来自 config.json）|
 | `POST /internal/after-group-msg` | OpenIM（内网）| webhook 触发推送 |
 
 ### 10.2 Hub Server gRPC 接口（Node 调用，`:50051`）

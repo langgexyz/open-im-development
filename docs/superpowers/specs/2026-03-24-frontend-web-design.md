@@ -353,8 +353,8 @@ Authorization: Bearer <hub_token>（管理员）
 |------|--------|------|
 | `POST /node/activate?code=` | Hub Server | 接收激活数据，解密写入 config.json |
 | `POST /node/init` | Hub Server | 接收公众号资料，创建 OpenIM 订阅群；Hub Server 用 `hub_private_key` 对请求签名（header: `X-Hub-Sig`），Node 用 `hub_public_key` 验签 |
-| `POST /auth/token` | Hub Web | credential → app_token + app_uid |
-| `POST /auth/exchange` | Node Web | app_token → `{ openim_token, openim_api_addr, group_id }` |
+| `POST /auth/token` | Node Web | `{ credential }` → `{ app_token, app_uid }` |
+| `POST /auth/exchange` | Node Web | `{ app_token }` → `{ openim_token, openim_api_addr, group_id }` |
 
 ---
 
