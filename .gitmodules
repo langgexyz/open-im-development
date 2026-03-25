@@ -22,3 +22,6 @@
 [submodule "openim-sdk-core"]
 	path = openim-sdk-core
 	url = https://github.com/openimsdk/openim-sdk-core.git
+[submodule "open-im-official-account-service"]
+	path = open-im-official-account-service
+	url = https://github.com/langgexyz/open-im-official-account-service.git
