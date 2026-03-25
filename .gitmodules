@@ -4,3 +4,21 @@
 [submodule "open-im-node-web"]
 	path = open-im-node-web
 	url = https://github.com/langgexyz/open-im-node-web.git
+[submodule "open-im-hub-proto"]
+	path = open-im-hub-proto
+	url = https://github.com/langgexyz/open-im-hub-proto.git
+[submodule "open-im-hub-server"]
+	path = open-im-hub-server
+	url = https://github.com/langgexyz/open-im-hub-server.git
+[submodule "open-im-node-server"]
+	path = open-im-node-server
+	url = https://github.com/langgexyz/open-im-node-server.git
+[submodule "open-im-go-extension"]
+	path = open-im-go-extension
+	url = https://github.com/langgexyz/open-im-go-extension.git
+[submodule "open-im-server"]
+	path = open-im-server
+	url = https://github.com/openimsdk/open-im-server.git
+[submodule "openim-sdk-core"]
+	path = openim-sdk-core
+	url = https://github.com/openimsdk/openim-sdk-core.git
